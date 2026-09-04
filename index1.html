@@ -1,0 +1,726 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip as RechartsTooltip,
+  ResponsiveContainer,
+  Legend,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid
+} from 'recharts';
+import {
+  Wallet,
+  PieChart as PieChartIcon,
+  TrendingUp,
+  DollarSign,
+  ShoppingBag,
+  Coffee,
+  Plus,
+  Trash2,
+  AlertCircle,
+  ChevronLeft,
+  ChevronRight,
+  CreditCard,
+  Calendar,
+  Repeat
+} from 'lucide-react';
+import { format, addMonths, subMonths, isSameMonth, parseISO } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
+
+const App = () => {
+  // --- State ---
+  
+  // Current viewed month
+  const [currentDate, setCurrentDate] = useState(new Date());
+
+  // Income configuration per month (using YYYY-MM as key)
+  const [monthlyIncomes, setMonthlyIncomes] = useState({
+    [format(new Date(), 'yyyy-MM')]: 5000
+  });
+
+  // Credit Cards configuration
+  const [creditCards, setCreditCards] = useState([
+    { id: 'cc1', name: 'Nubank', limit: 3000, color: '#8b5cf6' },
+    { id: 'cc2', name: 'Itaú', limit: 5000, color: '#f97316' }
+  ]);
+
+  // Unified Expenses State
+  // To handle installments, an expense has: id, name, totalAmount, category, date (YYYY-MM-DD), paymentMethod (cash|cc_id), installments (1+)
+  const [allExpenses, setAllExpenses] = useState([
+    { id: '1', name: 'Aluguel', totalAmount: 1500, category: 'needs', date: format(new Date(), 'yyyy-MM-dd'), paymentMethod: 'cash', installments: 1, installmentAmount: 1500 },
+    { id: '2', name: 'Mercado', totalAmount: 800, category: 'needs', date: format(new Date(), 'yyyy-MM-dd'), paymentMethod: 'cash', installments: 1, installmentAmount: 800 },
+    // Example of a 10x installment purchase from a previous month (simulated)
+    { id: '3', name: 'Geladeira', totalAmount: 2000, category: 'wants', date: format(subMonths(new Date(), 2), 'yyyy-MM-dd'), paymentMethod: 'cc1', installments: 10, installmentAmount: 200 }
+  ]);
+
+  // Form State
+  const [newExpenseName, setNewExpenseName] = useState('');
+  const [newExpenseAmount, setNewExpenseAmount] = useState('');
+  const [newExpenseCategory, setNewExpenseCategory] = useState('needs');
+  const [newExpenseDate, setNewExpenseDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [paymentMethod, setPaymentMethod] = useState('cash'); // 'cash' or cc id
+  const [installments, setInstallments] = useState(1);
+  const [showAddCard, setShowAddCard] = useState(false);
+  const [newCardName, setNewCardName] = useState('');
+
+  // Constants
+  const COLORS = {
+    needs: '#3b82f6', // Blue
+    wants: '#f59e0b', // Amber
+    savings: '#10b981', // Emerald
+    background: '#f8fafc',
+    card: '#ffffff'
+  };
+
+  const monthKey = format(currentDate, 'yyyy-MM');
+  const currentIncome = monthlyIncomes[monthKey] || 0;
+
+  const handleIncomeChange = (e) => {
+    const val = parseFloat(e.target.value) || 0;
+    setMonthlyIncomes(prev => ({ ...prev, [monthKey]: val }));
+  };
+
+  const formatCurrency = (value) => {
+    return new Intl.NumberFormat('pt-BR', {
+      style: 'currency',
+      currency: 'BRL',
+    }).format(value);
+  };
+
+  // Calculate expenses for the currently selected month, projecting installments
+  const projectedMonthlyExpenses = useMemo(() => {
+    const targetMonthStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+    const targetMonthEnd = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+    
+    let currentMonthItems = [];
+
+    allExpenses.forEach(expense => {
+      const expenseDate = parseISO(expense.date);
+      
+      // If it's a single payment, just check if it's in the current month
+      if (expense.installments === 1) {
+        if (isSameMonth(expenseDate, currentDate)) {
+          currentMonthItems.push({
+            ...expense,
+            displayAmount: expense.totalAmount,
+            installmentStr: ''
+          });
+        }
+      } else {
+        // If it has installments, calculate if any installment falls in the current month
+        // Installment 1 is in expenseDate month, Installment 2 in expenseDate + 1 month, etc.
+        const expenseMonthIndex = expenseDate.getFullYear() * 12 + expenseDate.getMonth();
+        const targetMonthIndex = currentDate.getFullYear() * 12 + currentDate.getMonth();
+        
+        const monthDiff = targetMonthIndex - expenseMonthIndex;
+        
+        // If the target month is within the installment period (0-indexed diff)
+        if (monthDiff >= 0 && monthDiff < expense.installments) {
+           currentMonthItems.push({
+            ...expense,
+            displayAmount: expense.installmentAmount,
+            installmentStr: `(${monthDiff + 1}/${expense.installments})`,
+            isProjected: monthDiff > 0 // Flag to show it's a future projection from past
+          });
+        }
+      }
+    });
+
+    return currentMonthItems;
+  }, [allExpenses, currentDate]);
+
+  const totals = useMemo(() => {
+    const needs = projectedMonthlyExpenses
+      .filter((e) => e.category === 'needs')
+      .reduce((sum, e) => sum + e.displayAmount, 0);
+      
+    const wants = projectedMonthlyExpenses
+      .filter((e) => e.category === 'wants')
+      .reduce((sum, e) => sum + e.displayAmount, 0);
+      
+    const totalExpenses = needs + wants;
+    const savings = Math.max(0, currentIncome - totalExpenses);
+    const deficit = totalExpenses > currentIncome ? totalExpenses - currentIncome : 0;
+
+    // Calculate Credit Card usages for the current month
+    const ccUsage = {};
+    creditCards.forEach(c => ccUsage[c.id] = 0);
+    
+    projectedMonthlyExpenses.forEach(e => {
+       if (e.paymentMethod !== 'cash' && ccUsage[e.paymentMethod] !== undefined) {
+           ccUsage[e.paymentMethod] += e.displayAmount;
+       }
+    });
+
+    return { needs, wants, savings, totalExpenses, deficit, ccUsage };
+  }, [projectedMonthlyExpenses, currentIncome, creditCards]);
+
+  const chartData = [
+    { name: 'Necessidades', value: totals.needs, color: COLORS.needs },
+    { name: 'Desejos', value: totals.wants, color: COLORS.wants },
+    { name: 'Poupança (Sobra)', value: totals.savings, color: COLORS.savings },
+  ].filter(item => item.value > 0);
+
+  const safeIncome = currentIncome > 0 ? currentIncome : 1;
+  const pctNeeds = (totals.needs / safeIncome) * 100;
+  const pctWants = (totals.wants / safeIncome) * 100;
+  const pctSavings = (totals.savings / safeIncome) * 100;
+
+  const handleAddExpense = (e) => {
+    e.preventDefault();
+    if (!newExpenseName || !newExpenseAmount || !newExpenseDate) return;
+
+    const amount = parseFloat(newExpenseAmount);
+    if (isNaN(amount) || amount <= 0) return;
+    
+    const parsedInstallments = parseInt(installments, 10) || 1;
+    const validInstallments = Math.max(1, parsedInstallments);
+    
+    // For installments, calculate value per month
+    const installmentAmount = amount / validInstallments;
+
+    const newExpense = {
+      id: Date.now().toString(),
+      name: newExpenseName,
+      totalAmount: amount,
+      installmentAmount: installmentAmount,
+      category: newExpenseCategory,
+      date: newExpenseDate, // Format YYYY-MM-DD
+      paymentMethod: paymentMethod,
+      installments: validInstallments
+    };
+
+    setAllExpenses(prev => [...prev, newExpense]);
+    setNewExpenseName('');
+    setNewExpenseAmount('');
+    setInstallments(1);
+    // Keep date and category as they might enter multiple
+  };
+
+  const handleDeleteExpense = (id) => {
+    // Note: deleting will remove all future projections of this expense
+    setAllExpenses(allExpenses.filter((e) => e.id !== id));
+  };
+
+  const handleAddCard = () => {
+    if(!newCardName.trim()) return;
+    const newCard = {
+      id: `cc_${Date.now()}`,
+      name: newCardName,
+      limit: 0, // Placeholder, can be edited later if needed
+      color: `#${Math.floor(Math.random()*16777215).toString(16)}` // Random hex
+    };
+    setCreditCards([...creditCards, newCard]);
+    setNewCardName('');
+    setShowAddCard(false);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans pb-12">
+      
+      {/* Month Navigation Sticky Header */}
+      <div className="sticky top-0 z-10 bg-white border-b border-slate-200 shadow-sm px-4 py-3 flex justify-center items-center gap-6">
+        <button 
+          onClick={() => setCurrentDate(subMonths(currentDate, 1))}
+          className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-600"
+        >
+          <ChevronLeft size={20} />
+        </button>
+        
+        <div className="flex flex-col items-center min-w-[150px]">
+          <span className="text-sm font-semibold text-slate-500 uppercase tracking-wider">
+            {format(currentDate, 'yyyy')}
+          </span>
+          <h2 className="text-xl font-bold text-slate-800 capitalize">
+            {format(currentDate, 'MMMM', { locale: ptBR })}
+          </h2>
+        </div>
+
+        <button 
+          onClick={() => setCurrentDate(addMonths(currentDate, 1))}
+          className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-600"
+        >
+          <ChevronRight size={20} />
+        </button>
+      </div>
+
+      <div className="max-w-7xl mx-auto space-y-6 p-4 md:p-8">
+        
+        {/* Main Control Header */}
+        <header className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-100 gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+              <PieChartIcon className="text-blue-500" />
+              Painel 50/30/20
+            </h1>
+            <p className="text-slate-500 text-sm mt-1">
+              Controle flexível com mensalização e cartões.
+            </p>
+          </div>
+          
+          <div className="w-full md:w-auto flex items-end gap-3">
+             <div className="flex-1 md:w-64">
+                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">
+                  Renda Líquida ({format(currentDate, 'MMM/yy', { locale: ptBR })})
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <span className="text-slate-400 font-medium">R$</span>
+                  </div>
+                  <input
+                    type="number"
+                    value={currentIncome || ''}
+                    onChange={handleIncomeChange}
+                    className="pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-lg font-semibold text-slate-800 w-full transition-all"
+                    placeholder="0.00"
+                  />
+                </div>
+             </div>
+             {/* Copy from previous month button (Convenience) */}
+             <button 
+                onClick={() => {
+                   const prevMonthKey = format(subMonths(currentDate, 1), 'yyyy-MM');
+                   if(monthlyIncomes[prevMonthKey]) {
+                      setMonthlyIncomes(prev => ({...prev, [monthKey]: monthlyIncomes[prevMonthKey]}));
+                   }
+                }}
+                className="p-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg transition-colors border border-slate-200 flex items-center gap-1"
+                title="Copiar renda do mês anterior"
+             >
+                <Repeat size={18} />
+             </button>
+          </div>
+        </header>
+
+        {/* Warning if spending exceeds income */}
+        {totals.deficit > 0 && (
+          <div className="bg-red-50 border border-red-200 text-red-700 p-4 rounded-xl flex items-center gap-3 animate-pulse shadow-sm">
+            <AlertCircle size={20} className="text-red-500 shrink-0" />
+            <p className="font-medium text-sm md:text-base">
+              Atenção! Seus gastos projetados para este mês ultrapassam a renda em {formatCurrency(totals.deficit)}.
+            </p>
+          </div>
+        )}
+
+        {/* Summary Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Needs Card */}
+          <div className="bg-white p-5 md:p-6 rounded-2xl shadow-sm border border-slate-100 relative overflow-hidden group">
+            <div className="absolute top-0 right-0 p-4 opacity-5 group-hover:opacity-10 transition-opacity">
+              <ShoppingBag size={80} color={COLORS.needs} />
+            </div>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-semibold text-slate-600 flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-blue-500"></div>
+                Necessidades
+              </h3>
+              <span className="text-xs font-bold text-blue-700 bg-blue-100 px-2 py-1 rounded-full">
+                Meta: 50%
+              </span>
+            </div>
+            <p className="text-2xl md:text-3xl font-bold text-slate-800">{formatCurrency(totals.needs)}</p>
+            <p className={`text-sm mt-2 font-medium ${pctNeeds > 50 ? 'text-red-500' : 'text-slate-500'}`}>
+              {pctNeeds.toFixed(1)}% da renda
+            </p>
+            <div className="w-full bg-slate-100 h-2 rounded-full mt-4 overflow-hidden">
+              <div 
+                className={`h-full rounded-full transition-all duration-500 ${pctNeeds > 50 ? 'bg-red-500' : 'bg-blue-500'}`}
+                style={{ width: `${Math.min(pctNeeds, 100)}%` }}
+              ></div>
+            </div>
+          </div>
+
+          {/* Wants Card */}
+          <div className="bg-white p-5 md:p-6 rounded-2xl shadow-sm border border-slate-100 relative overflow-hidden group">
+            <div className="absolute top-0 right-0 p-4 opacity-5 group-hover:opacity-10 transition-opacity">
+              <Coffee size={80} color={COLORS.wants} />
+            </div>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-semibold text-slate-600 flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-amber-500"></div>
+                Desejos
+              </h3>
+              <span className="text-xs font-bold text-amber-700 bg-amber-100 px-2 py-1 rounded-full">
+                Meta: 30%
+              </span>
+            </div>
+            <p className="text-2xl md:text-3xl font-bold text-slate-800">{formatCurrency(totals.wants)}</p>
+            <p className={`text-sm mt-2 font-medium ${pctWants > 30 ? 'text-red-500' : 'text-slate-500'}`}>
+              {pctWants.toFixed(1)}% da renda
+            </p>
+            <div className="w-full bg-slate-100 h-2 rounded-full mt-4 overflow-hidden">
+              <div 
+                className={`h-full rounded-full transition-all duration-500 ${pctWants > 30 ? 'bg-red-500' : 'bg-amber-500'}`}
+                style={{ width: `${Math.min(pctWants, 100)}%` }}
+              ></div>
+            </div>
+          </div>
+
+          {/* Savings Card */}
+          <div className="bg-gradient-to-br from-emerald-500 to-teal-600 p-5 md:p-6 rounded-2xl shadow-md text-white relative overflow-hidden">
+             <div className="absolute top-0 right-0 p-4 opacity-10">
+              <TrendingUp size={80} />
+            </div>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-semibold text-emerald-50 flex items-center gap-2">
+                 <Wallet size={18} />
+                Poupança Livre
+              </h3>
+              <span className="text-xs font-bold text-emerald-900 bg-emerald-100 px-2 py-1 rounded-full">
+                Meta: 20%
+              </span>
+            </div>
+            <p className="text-2xl md:text-3xl font-bold">{formatCurrency(totals.savings)}</p>
+            <p className={`text-sm mt-2 font-medium ${pctSavings < 20 ? 'text-emerald-200' : 'text-emerald-50'}`}>
+              {pctSavings.toFixed(1)}% da renda
+            </p>
+            <div className="w-full bg-emerald-800/50 h-2 rounded-full mt-4 overflow-hidden shadow-inner">
+              <div 
+                className="h-full bg-white rounded-full transition-all duration-1000 ease-out"
+                style={{ width: `${Math.min(pctSavings, 100)}%` }}
+              ></div>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          
+          {/* Left/Main Column: Forms & Lists */}
+          <div className="lg:col-span-8 space-y-6">
+            
+            {/* Input Form Section */}
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+                 <Plus className="text-blue-500" size={20}/>
+                 Lançar Nova Despesa
+              </h2>
+              
+              <form onSubmit={handleAddExpense} className="space-y-4">
+                {/* Row 1: Name, Amount, Date */}
+                <div className="flex flex-col md:flex-row gap-4">
+                  <div className="flex-[2]">
+                    <label className="block text-xs font-semibold text-slate-500 mb-1">Descrição</label>
+                    <input
+                      type="text"
+                      value={newExpenseName}
+                      onChange={(e) => setNewExpenseName(e.target.value)}
+                      placeholder="Ex: Conta de Luz, IFood..."
+                      className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                      required
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-xs font-semibold text-slate-500 mb-1">Valor Total</label>
+                    <div className="relative">
+                      <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400">R$</span>
+                      <input
+                        type="number"
+                        value={newExpenseAmount}
+                        onChange={(e) => setNewExpenseAmount(e.target.value)}
+                        placeholder="0.00"
+                        min="0.01"
+                        step="0.01"
+                        className="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none font-medium"
+                        required
+                      />
+                    </div>
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-xs font-semibold text-slate-500 mb-1">Data da Compra</label>
+                    <input
+                      type="date"
+                      value={newExpenseDate}
+                      onChange={(e) => setNewExpenseDate(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-slate-700"
+                      required
+                    />
+                  </div>
+                </div>
+
+                {/* Row 2: Category, Payment Method, Installments */}
+                <div className="flex flex-col md:flex-row gap-4 items-end">
+                   <div className="flex-1 w-full">
+                    <label className="block text-xs font-semibold text-slate-500 mb-1">Categoria (Regra 50/30)</label>
+                    <select
+                      value={newExpenseCategory}
+                      onChange={(e) => setNewExpenseCategory(e.target.value)}
+                      className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-slate-700"
+                    >
+                      <option value="needs">Necessidade (50%)</option>
+                      <option value="wants">Desejo (30%)</option>
+                    </select>
+                  </div>
+
+                  <div className="flex-1 w-full">
+                    <label className="block text-xs font-semibold text-slate-500 mb-1">Forma de Pagamento</label>
+                    <select
+                      value={paymentMethod}
+                      onChange={(e) => {
+                         setPaymentMethod(e.target.value);
+                         if(e.target.value === 'cash') setInstallments(1); // Reset if cash
+                      }}
+                      className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-slate-700 font-medium"
+                    >
+                      <option value="cash">À Vista / Débito</option>
+                      {creditCards.map(cc => (
+                        <option key={cc.id} value={cc.id}>💳 {cc.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {paymentMethod !== 'cash' && (
+                    <div className="w-full md:w-32">
+                      <label className="block text-xs font-semibold text-slate-500 mb-1">Parcelas</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="72"
+                        value={installments}
+                        onChange={(e) => setInstallments(e.target.value)}
+                        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-center font-bold text-slate-700"
+                      />
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    className="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-lg font-medium transition-colors shadow-sm shadow-blue-200 flex items-center justify-center gap-2 mt-4 md:mt-0"
+                  >
+                    Salvar
+                  </button>
+                </div>
+                
+                {/* Installment preview text */}
+                {installments > 1 && newExpenseAmount && (
+                   <p className="text-xs text-blue-600 bg-blue-50 p-2 rounded border border-blue-100 flex items-center gap-2">
+                     <Calendar size={14} />
+                     Serão <strong>{installments}x</strong> de <strong>{formatCurrency(newExpenseAmount / installments)}</strong> lançadas nos próximos meses.
+                   </p>
+                )}
+              </form>
+            </div>
+
+            {/* Monthly Transactions List */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                <h2 className="text-lg font-bold text-slate-800">
+                  Despesas de {format(currentDate, 'MMMM', { locale: ptBR })}
+                </h2>
+                <span className="text-xs font-medium text-slate-500 bg-slate-200/50 px-2.5 py-1 rounded-full">
+                  {projectedMonthlyExpenses.length} lançamentos
+                </span>
+              </div>
+              
+              {projectedMonthlyExpenses.length === 0 ? (
+                <div className="p-12 text-center flex flex-col items-center justify-center text-slate-400 gap-3">
+                   <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center border border-dashed border-slate-200">
+                      <ShoppingBag size={24} className="text-slate-300" />
+                   </div>
+                  <p>Nenhuma despesa para este mês.</p>
+                </div>
+              ) : (
+                <ul className="divide-y divide-slate-100 max-h-[500px] overflow-y-auto">
+                  {projectedMonthlyExpenses.sort((a,b) => new Date(b.date) - new Date(a.date)).map((expense) => {
+                     const isCC = expense.paymentMethod !== 'cash';
+                     const ccInfo = isCC ? creditCards.find(c => c.id === expense.paymentMethod) : null;
+
+                     return (
+                      <li key={`${expense.id}-${monthKey}`} className={`p-4 hover:bg-slate-50 transition-colors flex justify-between items-center group ${expense.isProjected ? 'bg-slate-50/30' : ''}`}>
+                        <div className="flex items-center gap-4">
+                          <div className={`w-1.5 h-10 rounded-full ${expense.category === 'needs' ? 'bg-blue-500' : 'bg-amber-500'}`}></div>
+                          <div>
+                            <p className="font-semibold text-slate-800 flex items-center gap-2">
+                              {expense.name}
+                              {expense.installmentStr && (
+                                 <span className="text-xs font-medium text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
+                                   {expense.installmentStr}
+                                 </span>
+                              )}
+                            </p>
+                            <div className="flex items-center gap-2 text-xs mt-0.5">
+                              <span className="text-slate-500 uppercase tracking-wider font-medium">
+                                {expense.category === 'needs' ? 'Necessidade' : 'Desejo'}
+                              </span>
+                              <span className="text-slate-300">•</span>
+                              <span className="text-slate-400 flex items-center gap-1">
+                                {format(parseISO(expense.date), 'dd/MM/yyyy')}
+                              </span>
+                              <span className="text-slate-300">•</span>
+                              {isCC ? (
+                                <span 
+                                  className="font-medium flex items-center gap-1 px-1.5 py-0.5 rounded-md"
+                                  style={{ color: ccInfo?.color || '#64748b', backgroundColor: `${ccInfo?.color}15` || '#f1f5f9' }}
+                                >
+                                  <CreditCard size={12} />
+                                  {ccInfo?.name || 'Cartão'}
+                                </span>
+                              ) : (
+                                <span className="text-emerald-600 font-medium bg-emerald-50 px-1.5 py-0.5 rounded-md">
+                                  À Vista
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <div className="text-right">
+                             <span className="font-bold text-slate-700 block">
+                              {formatCurrency(expense.displayAmount)}
+                             </span>
+                             {expense.installments > 1 && (
+                               <span className="text-[10px] text-slate-400 line-through">
+                                 Total: {formatCurrency(expense.totalAmount)}
+                               </span>
+                             )}
+                          </div>
+                          
+                          <button
+                            onClick={() => handleDeleteExpense(expense.id)}
+                            className="text-slate-300 hover:text-red-500 transition-colors p-2 rounded-full hover:bg-red-50 opacity-0 group-hover:opacity-100"
+                            title="Apagar Despesa (Remove todas as parcelas)"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
+          </div>
+
+          {/* Right Column: Visualizations & Cards Management */}
+          <div className="lg:col-span-4 space-y-6">
+            
+            {/* Chart Card */}
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col min-h-[350px]">
+              <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-6 text-center">Distribuição do Mês</h2>
+              
+              <div className="flex-1 w-full relative min-h-[200px]">
+                {chartData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={chartData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={65}
+                        outerRadius={85}
+                        paddingAngle={5}
+                        dataKey="value"
+                        stroke="none"
+                      >
+                        {chartData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <RechartsTooltip 
+                        formatter={(value) => formatCurrency(value)}
+                        contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)' }}
+                      />
+                      <Legend 
+                        verticalAlign="bottom" 
+                        height={36}
+                        iconType="circle"
+                        wrapperStyle={{ fontSize: '12px', paddingTop: '20px' }}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                ) : (
+                   <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm text-center px-4">
+                    Sem dados para gerar o gráfico neste mês.
+                  </div>
+                )}
+                
+                {chartData.length > 0 && (
+                   <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pb-8">
+                     <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Total</span>
+                     <span className="text-lg font-bold text-slate-800">{formatCurrency(totals.totalExpenses)}</span>
+                   </div>
+                )}
+              </div>
+            </div>
+
+            {/* Credit Cards Summary Widget */}
+            <div className="bg-slate-900 rounded-2xl shadow-lg border border-slate-800 p-5 text-white overflow-hidden relative">
+               {/* Decorative background circle */}
+               <div className="absolute -top-12 -right-12 w-32 h-32 bg-white/5 rounded-full blur-2xl pointer-events-none"></div>
+               
+               <div className="flex justify-between items-center mb-5 relative z-10">
+                 <h2 className="text-sm font-semibold text-slate-300 flex items-center gap-2">
+                   <CreditCard size={16} className="text-slate-400" />
+                   Faturas do Mês
+                 </h2>
+                 <button 
+                   onClick={() => setShowAddCard(!showAddCard)}
+                   className="text-xs bg-slate-800 hover:bg-slate-700 px-2 py-1 rounded transition-colors"
+                 >
+                   + Cartão
+                 </button>
+               </div>
+
+               {showAddCard && (
+                 <div className="mb-4 flex gap-2 relative z-10 animate-in fade-in slide-in-from-top-2 duration-200">
+                   <input 
+                     type="text" 
+                     value={newCardName}
+                     onChange={(e) => setNewCardName(e.target.value)}
+                     placeholder="Nome do Cartão" 
+                     className="flex-1 bg-slate-800 border border-slate-700 rounded px-3 py-1.5 text-sm outline-none focus:border-slate-500"
+                     onKeyDown={(e) => e.key === 'Enter' && handleAddCard()}
+                   />
+                   <button onClick={handleAddCard} className="bg-blue-600 hover:bg-blue-500 px-3 py-1.5 rounded text-sm font-medium transition-colors">
+                     Add
+                   </button>
+                 </div>
+               )}
+
+               <div className="space-y-4 relative z-10 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
+                 {creditCards.length === 0 ? (
+                    <p className="text-xs text-slate-500 text-center py-4">Nenhum cartão cadastrado.</p>
+                 ) : (
+                   creditCards.map(cc => {
+                     const usage = totals.ccUsage[cc.id] || 0;
+                     return (
+                       <div key={cc.id} className="bg-slate-800/50 rounded-xl p-3 border border-slate-700/50">
+                         <div className="flex justify-between items-center mb-2">
+                           <div className="flex items-center gap-2">
+                             <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: cc.color }}></div>
+                             <span className="font-medium text-sm">{cc.name}</span>
+                           </div>
+                           <span className="text-sm font-bold">{formatCurrency(usage)}</span>
+                         </div>
+                         {/* Mini visual indicator of usage relative to total expenses, just for flavor */}
+                         <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
+                            <div 
+                              className="h-full rounded-full opacity-80" 
+                              style={{ width: `${totals.totalExpenses > 0 ? (usage / totals.totalExpenses) * 100 : 0}%`, backgroundColor: cc.color }}
+                            ></div>
+                         </div>
+                       </div>
+                     )
+                   })
+                 )}
+               </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+      
+      {/* Basic inline CSS for the dark scrollbar in the card widget */}
+      <style dangerouslySetInnerHTML={{__html: `
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+      `}} />
+    </div>
+  );
+};
+
+export default App;
